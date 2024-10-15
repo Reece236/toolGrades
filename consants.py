@@ -1,9 +1,12 @@
+"""
+Constants for the project
+"""
 import numpy as np
 from hyperopt import hp
 
 TRAIN_START = "2018-01-01"
 TRAIN_END = "2021-12-31"
-GAME_TYPES = ["R", "F", "D", "L", "W"]
+GAME_TYPES = ("R", "F", "D", "L", "W")
 TEST_SIZE = .3
 RANDOM_STATE = 6
 CLF_MODEL_TYPES = ["LGBM"]
@@ -12,8 +15,8 @@ CLF_PARAMS = {"LGBM": {"n_estimators": hp.choice("n_estimators", np.arange(100, 
 REG_PARAMS = {"LGBM": {"n_estimators": hp.choice("n_estimators", np.arange(100, 1000, 100)), "max_depth": hp.choice("max_depth", np.arange(2, 10, 1)), "learning_rate": hp.choice("learning_rate", np.arange(.01, .1, .01)), "verbosity": -1}}
 MAX_EVALS = 10
 
-TAKES = ['ball','called_strike', 'blocked_ball', 'hit_by_pitch', 'pitchout']
-CONTACT = ['hit_into_play', 'foul', 'foul_tip', 'foul_bunt', 'bunt_foul_tip', 'foul_pitchout']
+TAKES = ('ball','called_strike', 'blocked_ball', 'hit_by_pitch', 'pitchout')
+CONTACT = ('hit_into_play', 'foul', 'foul_tip', 'foul_bunt', 'bunt_foul_tip', 'foul_pitchout')
 
 # Models needed for each tool
 strike_prob = {
@@ -35,7 +38,7 @@ b2b_model = {
 decision = {
     "features": ['pfx_x','pfx_z','plate_x','plate_z','release_speed', 'balls', 'strikes'],
     "target": "decision",
-    "query" : "pitch_type != '-'",
+    "query" : "decision != '-'",
     "model_type": "classifier",
     "scoring": "neg_log_loss"
     }
@@ -43,7 +46,7 @@ decision = {
 xev = {
     "features": ['pfx_x','pfx_z','plate_x','plate_z','release_speed', 'balls', 'strikes', 'launch_angle'],
     "target": "launch_speed",
-    "query" : "launch_speed != np.nan",
+    "query" : "contact == 1",
     "model_type": "regressor",
     "scoring": "neg_mean_squared_error"
     }
@@ -51,9 +54,9 @@ xev = {
 res_prob = {
     "features": ['pfx_x','pfx_z','plate_x','plate_z','release_speed', 'balls', 'strikes'],
     "target": "bb_barrels",
-    "query" : "bb_barrels != np.nan",
+    "query" : "bb_barrels == bb_barrels",
     "model_type": "classifier",
-    "scoring": "neg_mean_squared_error"
+    "scoring": "neg_log_loss"
     }
 
-TOOL_INFO = {'Strike Probability': strike_prob, 'Bat to Ball': b2b_model, 'Swing Decision': decision, 'xEV': xev, 'Outcome Probability': res_prob}
+TOOL_INFO = { 'xEV': xev, 'Strike Probability': strike_prob, 'Bat to Ball': b2b_model, 'Swing Decision': decision, 'Outcome Probability': res_prob}

@@ -1,65 +1,73 @@
+"""
+Nothing to see here. Just a little pre-processing
+"""
+import pickle
+from sklearn.preprocessing import LabelEncoder
 import pandas as pd
 import numpy as np
-from consants import TAKES, CONTACT
+from consants import TAKES, CONTACT, GAME_TYPES
+from toolgrade_sql import savant_query
+import sqlite3
 
 
-def pull_data(start_date: str, end_date: str, game_types: list):
+def pull_data(start_date: str, end_date: str, game_types: list) -> pd.DataFrame:
     """
-    While I don't have access to a database to pull from, I am good at downloading CSVs from Savant
-
     :param start_date: Date to start pulling data from
     :param end_date: Date to end pulling data from
     :param game_types: List of game types to pull data from
     :return: DataFrame of the data
     """
 
-    # Read in the data
-    data = pd.read_csv('data/all_statcast.csv', on_bad_lines='skip')
-
     # Gotta make sure the start date is before the end date
     if start_date >= end_date:
         print("Invalid date range, but I'll swap them for you champ!")
         start_date, end_date = end_date, start_date
 
-    # Make sure the dates are in range
-    data_start = data["game_date"].min()
-    data_end = data["game_date"].max()
+    # Connect to database statcast.db
+    conn = sqlite3.connect('data/statcast.db')
 
-    if start_date < data_start or end_date > data_end:
-        print(f"Invalid date range, data is from {data_start} to {data_end}")
+    # Pull the data
+    data = pd.read_sql_query(savant_query.format(takes=TAKES, contact=CONTACT, game_types=GAME_TYPES, start_date=start_date, end_date=end_date), conn)
 
-        start_date = max(start_date, data_start)
-        end_date = min(end_date, data_end)
+    data.to_csv('pls.csv')
 
-        print(f"Setting the date range to {start_date} to {end_date}")
-
-    # Filter the data
-    data = data[
-        (data["game_date"] >= start_date) & (data["game_date"] <= end_date) & (data["game_type"].isin(game_types))]
+    # Close the connection
+    conn.close()
 
     return data
 
-def format_data(data: pd.DataFrame):
+def format_data(data: pd.DataFrame, build_rv_table: bool = False) -> pd.DataFrame:
+    """
+    Format the data for analysis
+    :param data: statcast data
+    :param build_rv_table: boolean to build rv table or use existing
+    :return: formatted data
+    """
 
-    # Add column for swing decision
-    data['decision'] = np.where(data['description'].isin(TAKES), 0, 1)
+    # Label encode bb_barrels and calculate rv_table then save
+    if build_rv_table:
+        le = LabelEncoder()
+        data['bb_barrels'] = le.fit_transform(data['bb_barrels'])
+        rv_table = data.groupby('bb_barrels')['delta_run_exp'].mean()
 
-    # Add column for contact
-    data['contact'] = np.where(data['description'].isin(CONTACT), 1, 0)
+        rv_table.to_csv('models/rv_table.csv')
+        with open('models/le.pkl', 'wb') as f:
+            pickle.dump(le, f)
 
-    # Add column if called strike
-    data['cStrike'] = np.where(data['description'] == 'called_strike', 1, 0)
+    else:
+        with open('models/le.pkl', 'rb') as f:
+            le = pickle.load(f)
 
-    # Add count column
-    data['count'] = data['balls'].astype(str) + '-' + data['strikes'].astype(str)
+        data['bb_barrels'] = le.transform(data['bb_barrels'])
 
-    # Add specific event by batted ball and hit zone (i.e. 'barrel' or 'weak')
-    data['bb_barrels'] = data['bb_type'].astype(str) + data['launch_speed_angle'].astype(str)
 
     # Replace hit_into_play with bb_barrels and calculate xRV and cRV (count dependent xRV)
     data['result'] = data['description'].replace({'hit_into_play': np.nan}).fillna(data['bb_barrels'])
     data['xRV'] = data['result'].map(data.groupby('result')['delta_run_exp'].mean())
-    data['cResult'] = data['count'] + data['result']
+    data['cResult'] = data['count'].astype(str) + data['result'].astype(str)
     data['cRV'] = data['cResult'].map(data.groupby('cResult')['delta_run_exp'].mean())
+
+    # Replace any bb_barrels that occur fewer than 10 times with nan
+    data['bb_barrels'] = data['bb_barrels'].mask(data['bb_barrels'].map(data['bb_barrels'].value_counts()) < 10)
 
     return data

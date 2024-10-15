@@ -7,9 +7,8 @@ Author: Reece Calvin
 """
 
 import pandas as pd
-import numpy as np
-from consants import GAME_TYPES, TRAIN_START, TRAIN_END, TOOL_INFO, CLF_MODEL_TYPES, REG_MODEL_TYPES, CLF_PARAMS, REG_PARAMS, MAX_EVALS
-from sklearn.model_selection import cross_val_score
+from consants import GAME_TYPES, TRAIN_START, TRAIN_END, TOOL_INFO, CLF_MODEL_TYPES, REG_MODEL_TYPES, CLF_PARAMS, REG_PARAMS, MAX_EVALS, RANDOM_STATE
+from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold
 import pickle
 import argparse
 from etl import pull_data, format_data
@@ -18,7 +17,7 @@ import xgboost as xgb
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
 
-def train_all_models(tool_info: dict, start_date: str, end_date: str, clf_model_types: list, reg_model_types: list, clf_params: dict, reg_params: dict, max_evals: int = 100):
+def train_all_models(tool_info: dict, start_date: str, end_date: str, clf_model_types: list, reg_model_types: list, clf_params: dict, reg_params: dict, max_evals: int, folds: int = 5):
     """
     Train all models for each tool grade
 
@@ -31,16 +30,17 @@ def train_all_models(tool_info: dict, start_date: str, end_date: str, clf_model_
     :param clf_params: Dictionary of hyperparameters for classifier models
     :param reg_params: Dictionary of hyperparameters for regressor models
     :param max_evals: Maximum number of evaluations for hyperparameter tuning
+    :param folds: Number of folds for cross validation
 
     """
 
     # Pull and format the data
     print("Pulling data...")
     data = pull_data(start_date=start_date, end_date=end_date, game_types=GAME_TYPES)
-    data = format_data(data)
+    data = format_data(data, build_rv_table=True)
 
-    for tool_model in tool_info.keys():
-        info = tool_info[tool_model]
+    for tool_model in tool_info.items():
+        info = tool_model[1]
 
         # Record the best model
         best_score = float('-inf')
@@ -50,7 +50,7 @@ def train_all_models(tool_info: dict, start_date: str, end_date: str, clf_model_
 
         for model_type in model_types:
 
-            print(f"Training model {tool_model} with model type {model_type}")
+            print(f"Training model {tool_model[0]} with model type {model_type} {info['model_type']}")
 
             if model_type == "LGBM":
                 model = lgbm.LGBMClassifier() if info["model_type"] == "classifier" else lgbm.LGBMRegressor()
@@ -65,10 +65,12 @@ def train_all_models(tool_info: dict, start_date: str, end_date: str, clf_model_
             features = info["features"]
             target = info["target"]
             scoring = info["scoring"]
+            query = info["query"]
 
             # Set up the data
-            X = data[features]
-            y = data[target]
+            subset = data.query(query).dropna(subset=features + [target])
+            X = subset[features]
+            y = subset[target]
 
             # Fit the hyperparameters
             print("Fitting hyperparameters...")
@@ -76,31 +78,42 @@ def train_all_models(tool_info: dict, start_date: str, end_date: str, clf_model_
 
             def objective(params):
                 model.set_params(**params)
-                score = cross_val_score(model, X, y, cv=5, scoring=scoring)
+                if info["model_type"] == "classifier":
+                    kf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=RANDOM_STATE)
+                else:
+                    kf = KFold(n_splits=folds, shuffle=True, random_state=RANDOM_STATE)
+
+                score = cross_val_score(model, X, y, cv=kf, scoring=scoring)
                 return {"loss": -score.mean(), "status": STATUS_OK}
 
             trials = Trials()
             best = fmin(objective, params, algo=tpe.suggest, max_evals=max_evals, trials=trials)
 
-            # Set the best hyperparameters
-            model.set_params(**best)
+            # Retrieve the best trial
+            best_trial = min(trials.results, key=lambda x: x['loss'])
+            score = best_trial['loss']
 
-            # Cross validate the model
-            print("Cross validating model...")
-            scores = cross_val_score(model, X, y, cv=5, scoring=scoring)
+            # Save the best model
+            if score > best_score:
 
-            print(f"Cross validation scores: {scores}")
+                # Set the best hyperparameters
+                model.set_params(**best)
 
-            if np.mean(scores) > best_score:
+                # Fit the model
+                print("Fitting the model...")
+                model.fit(X, y)
+
+                best_score = score
                 best_model = model
-                best_score = np.mean(scores)
 
         # Save the best model and features
-        with open(f"{target}_model.pkl", "wb") as f:
+        with open(f"models/{tool_model[0]}_model.pkl", "wb") as f:
             pickle.dump(best_model, f)
 
-        with open(f"{target}_features.pkl", "wb") as f:
+        with open(f"models/{tool_model[0]}_features.pkl", "wb") as f:
             pickle.dump(features, f)
+
+        print(f"Saved {tool_model[0]} model \n")
 
 def get_state_exp_args() -> argparse.Namespace:
     """
