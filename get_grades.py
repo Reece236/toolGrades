@@ -4,7 +4,7 @@ I mean it's called `get_grades`
 import numpy as np
 import pandas as pd
 import pickle
-from consants import TOOL_INFO, GAME_TYPES
+from constants import TOOL_INFO, GAME_TYPES
 import pybaseball as pyb
 import argparse
 from etl import pull_data, format_data
@@ -54,17 +54,11 @@ def get_grades(data: pd.DataFrame, models: dict, year: int, q:int) -> pd.DataFra
     # Add result probability
     probs = pd.DataFrame(models['Outcome Probability'].predict_proba(data[models['Outcome Probability' + "_features"]]))
 
-    data[models['Outcome Probability' + "_features"]].to_csv('pls3.csv')
-
-    probs.to_csv('pls1.csv')
-
     # Calculate run value for each event
     for col in probs.columns:
         probs[col] = probs[col] * models['run_value'].iloc[int(col)]
 
     probs.fillna(0, inplace=True)
-
-    probs.to_csv('pls.csv')
 
     # Calculate swing run value
     data['swingRv'] = list(probs.sum(axis=1))

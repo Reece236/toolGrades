@@ -5,7 +5,7 @@ import pickle
 from sklearn.preprocessing import LabelEncoder
 import pandas as pd
 import numpy as np
-from consants import TAKES, CONTACT, GAME_TYPES
+from constants import TAKES, CONTACT, GAME_TYPES
 from toolgrade_sql import savant_query
 import sqlite3
 
@@ -28,8 +28,6 @@ def pull_data(start_date: str, end_date: str, game_types: list) -> pd.DataFrame:
 
     # Pull the data
     data = pd.read_sql_query(savant_query.format(takes=TAKES, contact=CONTACT, game_types=GAME_TYPES, start_date=start_date, end_date=end_date), conn)
-
-    data.to_csv('pls.csv')
 
     # Close the connection
     conn.close()

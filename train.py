@@ -7,7 +7,7 @@ Author: Reece Calvin
 """
 
 import pandas as pd
-from consants import GAME_TYPES, TRAIN_START, TRAIN_END, TOOL_INFO, CLF_MODEL_TYPES, REG_MODEL_TYPES, CLF_PARAMS, REG_PARAMS, MAX_EVALS, RANDOM_STATE
+from constants import GAME_TYPES, TRAIN_START, TRAIN_END, TOOL_INFO, CLF_MODEL_TYPES, REG_MODEL_TYPES, CLF_PARAMS, REG_PARAMS, MAX_EVALS, RANDOM_STATE
 from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold
 import pickle
 import argparse
@@ -16,15 +16,46 @@ import lightgbm as lgbm
 import xgboost as xgb
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
+from bayes import bat_to_ball_tool, contact_quality_tool, power_tool, swing_decision_tool
 
-def train_all_models(tool_info: dict, start_date: str, end_date: str, clf_model_types: list, reg_model_types: list, clf_params: dict, reg_params: dict, max_evals: int, folds: int = 5):
+def train_gp_models(data: pd.DataFrame, model: dict):
+    """
+    Train the Gaussian Process models for each tool grade
+
+    :param data: DataFrame of the data
+    :param model: Dictionary of the model, features, and target
+    """
+
+    for tool_model in model.items():
+        info = tool_model[1]
+
+        print(f"Training model {tool_model[0]}")
+
+        if tool_model[0] == "Bat to Ball":
+            posterior, bat_to_ball_model = bat_to_ball_tool(data, info)
+
+        elif tool_model[0] == "Outcome Probability":
+            posterior, contact_quality_model = contact_quality_tool(data, info)
+
+        elif tool_model[0] == "xEV":
+            posterior, power_model = power_tool(data, info)
+
+        elif tool_model[0] == "Swing Decision":
+            posterior, swing_decision_model = swing_decision_tool(data, info)
+
+        # Save the model
+        with open(f"models/{tool_model[0]}_model.pkl", "wb") as f:
+            pickle.dump(posterior, f)
+
+        print(f"Saved {tool_model[0]} model \n")
+
+def train_all_models(tool_info: dict, data: pd.DataFrame, clf_model_types: list, reg_model_types: list, clf_params: dict, reg_params: dict, max_evals: int, folds: int = 5):
     """
     Train all models for each tool grade
 
     :param tool_info: Dictionary of required models and their respective features and targets
     :param targets: List of targets for each model
-    :param start_date: Date to start training
-    :param end_date: Date to end training
+    :param data: DataFrame of the data
     :param clf_model_types: List of classifier model types to test
     :param reg_model_types: List of regressor model types to test
     :param clf_params: Dictionary of hyperparameters for classifier models
@@ -33,11 +64,6 @@ def train_all_models(tool_info: dict, start_date: str, end_date: str, clf_model_
     :param folds: Number of folds for cross validation
 
     """
-
-    # Pull and format the data
-    print("Pulling data...")
-    data = pull_data(start_date=start_date, end_date=end_date, game_types=GAME_TYPES)
-    data = format_data(data, build_rv_table=True)
 
     for tool_model in tool_info.items():
         info = tool_model[1]
@@ -124,6 +150,8 @@ def get_state_exp_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Train models needed for tool grades")
 
+    parser.add_argument("--train_lgb", action='store_false', help="Train the lightgbm models", default=True)
+    parser.add_argument("--train_gp", action='store_false', help="Train the Gaussian Process models", default=True)
     parser.add_argument("--start_date", type=str, help="Date to start training", default=TRAIN_START)
     parser.add_argument("--end_date", type=str, help="Date to end training", default=TRAIN_END)
     parser.add_argument("--game_types", type=list, help="List of game types to pull data from", default=GAME_TYPES)
@@ -141,8 +169,18 @@ def main():
     # Get the arguments
     args = get_state_exp_args()
 
+    # Pull and format the data
+    print("Pulling data...")
+    data = pull_data(args.start_date, args.end_date, args.game_types)
+    data = format_data(data, build_rv_table=True)
+
+
     # Train the models
-    train_all_models(args.tool_info, args.start_date, args.end_date, args.clf_model_types, args.reg_model_types, args.clf_params, args.reg_params, args.max_evals)
+    if args.train_lgb:
+        train_all_models(args.tool_info, data, args.clf_model_types, args.reg_model_types, args.clf_params, args.reg_params, args.max_evals)
+
+    if args.train_gp:
+        train_gp_models(data, args.tool_info)
 
 if __name__ == "__main__":
     main()
