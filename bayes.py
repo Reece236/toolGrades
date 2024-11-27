@@ -62,7 +62,7 @@ def bat_to_ball_tool(data: pd.DataFrame, model: dict) -> Tuple[az.InferenceData,
         y_ = gp.marginal_likelihood('y', X=X_scaled, y=y_scaled, sigma=sigma)
         
         # Sample from the posterior
-        trace = pm.sample(2000, tune=1000, random_seed=RANDOM_STATE, cores=2)
+        trace = pm.sample(500, tune=250, random_seed=RANDOM_STATE, cores=2)
 
     # Convert to ArviZ InferenceData
     posterior = az.from_pymc(trace)
@@ -116,7 +116,7 @@ def contact_quality_tool(data: pd.DataFrame, model: dict) -> Tuple[az.InferenceD
         y_ = gp.marginal_likelihood('y', X=X_scaled, y=y_scaled, sigma=sigma)
         
         # Sample from the posterior
-        trace = pm.sample(2000, tune=1000, random_seed=RANDOM_STATE, cores=2)
+        trace = pm.sample(500, tune=250, random_seed=RANDOM_STATE, cores=2)
 
     # Convert to ArviZ InferenceData
     posterior = az.from_pymc(trace)
@@ -176,7 +176,7 @@ def power_tool(data: pd.DataFrame, model: dict) -> Tuple[az.InferenceData, pm.Mo
         y_ = gp.marginal_likelihood('y', X=X_scaled, y=y_scaled, sigma=sigma)
         
         # Sample from the posterior
-        trace = pm.sample(2000, tune=1000, random_seed=RANDOM_STATE, cores=2)
+        trace = pm.sample(500, tune=250, random_seed=RANDOM_STATE, cores=2)
 
     # Convert to ArviZ InferenceData
     posterior = az.from_pymc(trace)
@@ -230,7 +230,7 @@ def swing_decision_tool(data: pd.DataFrame, model: dict) -> Tuple[az.InferenceDa
         y_ = gp.marginal_likelihood('y', X=X_scaled, y=y_scaled, sigma=sigma)
         
         # Sample from the posterior
-        trace = pm.sample(2000, tune=1000, random_seed=RANDOM_STATE, cores=2)
+        trace = pm.sample(500, tune=250, random_seed=RANDOM_STATE, cores=2)
 
     # Convert to ArviZ InferenceData
     posterior = az.from_pymc(trace)

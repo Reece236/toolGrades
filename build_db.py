@@ -11,15 +11,20 @@ def build_db():
     """
     Build a database file with the statcast data
     """
-    conn = sqlite3.connect('statcast.db')
+    conn = sqlite3.connect('data/statcast.db')
     c = conn.cursor()
-
     all_data = pd.DataFrame()
 
     for file in glob.glob('archive/*.csv'):
         df = pd.read_csv(file)
         all_data = pd.concat([all_data, df], ignore_index=True)
         print(f'Read {file}')
+
+    # Debugging: Print DataFrame columns and data types
+    print("DataFrame columns and data types:")
+    print(all_data.dtypes)
+    print("DataFrame preview:")
+    print(all_data.head())
 
     all_data.to_sql('statcast', conn, index=False, if_exists='replace')
     print('All data added to statcast table in statcast.db')

@@ -16,8 +16,8 @@ savant_query = """
         CASE WHEN description IN {takes} THEN 0 ELSE 1 END AS decision,
         CASE WHEN description IN {contact} THEN 1 ELSE 0 END AS contact,
         CASE WHEN description IS 'called_strike' THEN 1 ELSE 0 END AS cStrike,
-        CONCAT(balls, '-', strikes) AS count,
-        CONCAT(bb_type, launch_speed_angle) AS bb_barrels        
+        balls || '-' || strikes AS count,
+        bb_type || launch_speed_angle AS bb_barrels        
     FROM
         statcast
     WHERE
