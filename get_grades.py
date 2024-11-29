@@ -8,6 +8,8 @@ from constants import TOOL_INFO, GAME_TYPES
 import pybaseball as pyb
 import argparse
 from etl import pull_data, format_data
+import pymc as pm
+import arviz as az
 
 def load_models() -> dict:
     """
@@ -22,7 +24,7 @@ def load_models() -> dict:
 
         print(f"Loading {info[0]} model")
 
-        with open(f"models/{info[0]}_model.pkl", "rb") as f:
+        with open(f"models/{info[0]}_lgbm.pkl", "rb") as f:
             model = pickle.load(f)
             models[info[0]] = model
 
@@ -37,6 +39,100 @@ def load_models() -> dict:
     models['run_value'] = run_value
 
     return models
+
+def standardize_to_20_80(values: pd.Series) -> pd.Series:
+    """
+    Standardize values to a 20-80 scale where 50 is mean and 10 points = 1 standard deviation
+    """
+    return (values - values.mean()) / values.std() * 10 + 50
+
+def calculate_bayesian_grades(data: pd.DataFrame, league_priors: dict) -> pd.DataFrame:
+    """
+    Calculate Bayesian estimates for player grades using league-wide priors
+    """
+    bayesian_grades = pd.DataFrame()
+    
+    for metric in ['decScore', '95th_pBat_speed', 'smash_factor', 'conScore']:
+        # Get relevant data and filter out missing values
+        metric_data = data[['batter', metric]].dropna()
+        
+        # Only include players with at least 10 valid observations
+        valid_players = metric_data.groupby('batter').size()
+        valid_players = valid_players[valid_players >= 10].index
+        
+        if len(valid_players) == 0:
+            continue
+            
+        metric_data = metric_data[metric_data['batter'].isin(valid_players)]
+        
+        # Calculate stats and standardize data
+        player_stats = metric_data.groupby('batter').agg({
+            metric: ['mean', 'std', 'count']
+        })
+        player_stats.columns = ['mean', 'std', 'n']
+        
+        # Handle zero variance cases and standardize
+        player_stats['std'] = player_stats['std'].fillna(0.001)
+        player_stats['std'] = player_stats['std'].clip(lower=0.001)
+        
+        # Standardize means for numerical stability
+        overall_mean = player_stats['mean'].mean()
+        overall_std = player_stats['mean'].std()
+        player_stats['mean_standardized'] = (player_stats['mean'] - overall_mean) / overall_std
+        
+        # Pre-calculate observation standard deviations
+        obs_stds = np.sqrt((player_stats['std'].values**2 / player_stats['n'].values) / overall_std**2)
+        obs_stds = np.clip(obs_stds, 0.001, None)
+        
+        # Adjust priors to standardized scale
+        prior_mean = (league_priors[metric]['mean'] - overall_mean) / overall_std
+        prior_std = league_priors[metric]['std'] / overall_std
+        
+        with pm.Model() as model:
+            # Hierarchical priors with improved numerical stability
+            mu = pm.Normal('mu', mu=prior_mean, sigma=max(prior_std, 0.1))
+            sigma = pm.HalfNormal('sigma', sigma=max(prior_std, 0.1))
+            
+            # Player effects with stable variance
+            player_effects = pm.Normal('player_effects',
+                                     mu=mu,
+                                     sigma=sigma,
+                                     shape=len(valid_players))
+            
+            # Likelihood with pre-calculated observation standard deviations
+            obs = pm.Normal('obs',
+                          mu=player_effects,
+                          sigma=obs_stds,
+                          observed=player_stats['mean_standardized'])
+            
+            # Inference with increased tuning
+            trace = pm.sample(2000, tune=2000, target_accept=0.9)
+        
+        # Transform results back to original scale and create grades
+        summary = az.summary(trace, var_names=['player_effects'])
+        raw_vals = summary['mean'].values * overall_std + overall_mean
+        ci_lower = summary['hdi_3%'].values * overall_std + overall_mean
+        ci_upper = summary['hdi_97%'].values * overall_std + overall_mean
+        
+        # Create grades from raw values
+        grades = standardize_to_20_80(pd.Series(raw_vals))
+        ci_lower_grade = standardize_to_20_80(pd.Series(ci_lower))
+        ci_upper_grade = standardize_to_20_80(pd.Series(ci_upper))
+        
+        # Store both raw values and grades
+        summary_df = pd.DataFrame({
+            f'{metric}_bayes': raw_vals,
+            f'{metric}_bayes_grade': grades,
+            f'{metric}_ci_lower_grade': ci_lower_grade,
+            f'{metric}_ci_upper_grade': ci_upper_grade
+        }, index=valid_players)
+        
+        if bayesian_grades.empty:
+            bayesian_grades = summary_df
+        else:
+            bayesian_grades = bayesian_grades.join(summary_df)
+    
+    return bayesian_grades
 
 def get_grades(data: pd.DataFrame, models: dict, year: int, q:int) -> pd.DataFrame:
     """
@@ -67,7 +163,7 @@ def get_grades(data: pd.DataFrame, models: dict, year: int, q:int) -> pd.DataFra
     data['ballRv'] = data.loc[data['cResult'] == (data['count'] + 'ball')]['cRV'].mean()
     data['strikeRv'] = data.loc[data['cResult'] == (data['count'] + 'called_strike')]['cRV'].mean()
 
-    # Calculate swing/called strike/ball probabilities and turn into descion score
+    # Calculate swing/called strike/ball probabilities and turn into decision score
     data['pSwing'] = models['Swing Decision'].predict_proba(data[models['Swing Decision' + "_features"]])[:, 1]
     data['pStrike'] = (models['Strike Probability'].predict_proba(data[models['Strike Probability' + "_features"]])[:, 1]) * (1-data['pSwing'])
     data['pBall'] = 1 - data['pSwing'] - data['pStrike']
@@ -143,6 +239,29 @@ def get_grades(data: pd.DataFrame, models: dict, year: int, q:int) -> pd.DataFra
     grades['95thPowGrade'] = (grades['95th_pBat_speed'] - qualifiers['95th_pBat_speed'].mean()) / qualifiers['95th_pBat_speed'].std() * 10 + 50
     grades['EV95Grade'] = (grades['EV95'] - qualifiers['EV95'].mean()) / qualifiers['EV95'].std() * 10 + 50
     grades['stdEVGrade'] = (grades['std_EV'] - qualifiers['std_EV'].mean()) / qualifiers['std_EV'].std() * 10 + 50
+
+    # Define league-wide priors based on historical data
+    league_priors = {
+        'decScore': {'mean': -0.45, 'std': 0.05},
+        '95th_pBat_speed': {'mean': 79.0, 'std': 1.25},
+        'smash_factor': {'mean': .40, 'std': 0.09},
+        'conScore': {'mean': -0.15, 'std': 0.075}
+    }
+    
+    # Calculate Bayesian grades
+    bayesian_estimates = calculate_bayesian_grades(data, league_priors)
+
+    grades.to_csv('results/pre_grades.csv')
+    bayesian_estimates.to_csv('results/pre_baes.csv')
+    
+    # Add Bayesian estimates to grades DataFrame
+    grades = grades.join(bayesian_estimates)
+    
+    # Add confidence intervals and standardized Bayesian grades
+    for metric in ['decScore', '95th_pBat_speed', 'smash_factor', 'conScore']:
+        grades[f'{metric}_ci_lower'] = bayesian_estimates[f'{metric}_ci_lower']
+        grades[f'{metric}_ci_upper'] = bayesian_estimates[f'{metric}_ci_upper']
+        grades[f'{metric}_bayes_grade'] = bayesian_estimates[f'{metric}_bayes_grade']
 
     batter_names = pyb.playerid_reverse_lookup(grades.index, key_type='mlbam')
 
