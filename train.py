@@ -150,8 +150,6 @@ def get_state_exp_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Train models needed for tool grades")
 
-    parser.add_argument("--train_lgb", action='store_false', help="Train the lightgbm models", default=True)
-    parser.add_argument("--train_gp", action='store_false', help="Train the Gaussian Process models", default=True)
     parser.add_argument("--start_date", type=str, help="Date to start training", default=TRAIN_START)
     parser.add_argument("--end_date", type=str, help="Date to end training", default=TRAIN_END)
     parser.add_argument("--game_types", type=list, help="List of game types to pull data from", default=GAME_TYPES)
@@ -174,13 +172,8 @@ def main():
     data = pull_data(args.start_date, args.end_date, args.game_types)
     data = format_data(data, build_rv_table=True)
 
-
     # Train the models
-    if args.train_lgb:
-        train_all_models(args.tool_info, data, args.clf_model_types, args.reg_model_types, args.clf_params, args.reg_params, args.max_evals)
-
-    if args.train_gp:
-        train_gp_models(data, args.tool_info)
+    train_all_models(args.tool_info, data, args.clf_model_types, args.reg_model_types, args.clf_params, args.reg_params, args.max_evals)
 
 if __name__ == "__main__":
     main()
