@@ -1,6 +1,6 @@
 # MLB Tool Grades
 
-Can't run without adding a statcast.db file but too large of a file to worry about adding.
+Can't run without adding a statcast.db file but too large of a file to worry about adding. You could also add one or collection of csv's of statcast data in the data/statcast/ folder
 
 ## Examples:
 
