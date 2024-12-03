@@ -6,15 +6,16 @@ from sklearn.preprocessing import LabelEncoder
 import pandas as pd
 import numpy as np
 from constants import TAKES, CONTACT, GAME_TYPES
-from toolgrade_sql import savant_query
+from toolgrade_sql import savant_query, first_half_query
 import sqlite3
 
 
-def pull_data(start_date: str, end_date: str, game_types: list) -> pd.DataFrame:
+def pull_data(start_date: str, end_date: str, game_types: list, first_half: bool = False) -> pd.DataFrame:
     """
     :param start_date: Date to start pulling data from
     :param end_date: Date to end pulling data from
     :param game_types: List of game types to pull data from
+    :param first_half: Boolean to pull first half data
     :return: DataFrame of the data
     """
 
@@ -26,8 +27,11 @@ def pull_data(start_date: str, end_date: str, game_types: list) -> pd.DataFrame:
     # Connect to database statcast.db
     conn = sqlite3.connect('data/statcast.db')
 
+    # Set the query
+    query = (first_half_query if first_half else savant_query).format(takes=TAKES, contact=CONTACT, game_types=GAME_TYPES, start_date=start_date, end_date=end_date)
+    
     # Pull the data
-    data = pd.read_sql_query(savant_query.format(takes=TAKES, contact=CONTACT, game_types=GAME_TYPES, start_date=start_date, end_date=end_date), conn)
+    data = pd.read_sql_query(query, conn)
 
     # Close the connection
     conn.close()
@@ -46,7 +50,7 @@ def format_data(data: pd.DataFrame, build_rv_table: bool = False) -> pd.DataFram
     if build_rv_table:
         le = LabelEncoder()
         data['bb_barrels'] = le.fit_transform(data['bb_barrels'])
-        rv_table = data.groupby('bb_barrels')['delta_run_exp'].mean()
+        rv_table = data.query('contact == 1').groupby('bb_barrels')[['delta_run_exp']].mean()
 
         rv_table.to_csv('models/rv_table.csv')
         with open('models/le.pkl', 'wb') as f:

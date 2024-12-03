@@ -6,6 +6,9 @@ from hyperopt import hp
 
 TRAIN_START = "2018-01-01"
 TRAIN_END = "2021-12-31"
+OVR_YEAR = 2022
+QUALIFIER = 1000
+OVR_METRIC = 'wRC+'
 GAME_TYPES = ("R", "F", "D", "L", "W")
 TEST_SIZE = .3
 RANDOM_STATE = 6
@@ -54,7 +57,7 @@ xev = {
 res_prob = {
     "features": ['pfx_x','pfx_z','plate_x','plate_z','release_speed', 'balls', 'strikes'],
     "target": "bb_barrels",
-    "query" : "bb_barrels == bb_barrels",
+    "query" : "contact == 1",
     "model_type": "classifier",
     "scoring": "neg_log_loss"
     }

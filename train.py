@@ -7,139 +7,83 @@ Author: Reece Calvin
 """
 
 import pandas as pd
-from constants import GAME_TYPES, TRAIN_START, TRAIN_END, TOOL_INFO, CLF_MODEL_TYPES, REG_MODEL_TYPES, CLF_PARAMS, REG_PARAMS, MAX_EVALS, RANDOM_STATE
+from constants import GAME_TYPES, TRAIN_START, TRAIN_END, TOOL_INFO, MAX_EVALS, RANDOM_STATE
 from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold
 import pickle
 import argparse
 from etl import pull_data, format_data
 import lightgbm as lgbm
-import xgboost as xgb
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
+import numpy as np
 from bayes import bat_to_ball_tool, contact_quality_tool, power_tool, swing_decision_tool
+from sklearn.calibration import CalibratedClassifierCV
 
-def train_gp_models(data: pd.DataFrame, model: dict):
+def train_all_models(tool_info: dict, data: pd.DataFrame, max_evals: int, folds: int = 5):
     """
-    Train the Gaussian Process models for each tool grade
-
-    :param data: DataFrame of the data
-    :param model: Dictionary of the model, features, and target
+    Train all models using LightGBM
     """
-
-    for tool_model in model.items():
+    for tool_model in tool_info.items():
+        
         info = tool_model[1]
-
         print(f"Training model {tool_model[0]}")
 
-        if tool_model[0] == "Bat to Ball":
-            posterior, bat_to_ball_model = bat_to_ball_tool(data, info)
+        # Initialize LightGBM model
+        model = lgbm.LGBMClassifier() if info["model_type"] == "classifier" else lgbm.LGBMRegressor()
 
-        elif tool_model[0] == "Outcome Probability":
-            posterior, contact_quality_model = contact_quality_tool(data, info)
+        # Get info from the dictionary
+        features = info["features"]
+        target = info["target"]
+        scoring = info["scoring"]
+        query = info["query"]
 
-        elif tool_model[0] == "xEV":
-            posterior, power_model = power_tool(data, info)
+        # Set up the data
+        subset = data.query(query).dropna(subset=features + [target])
+        X = subset[features]
+        y = subset[target]
 
-        elif tool_model[0] == "Swing Decision":
-            posterior, swing_decision_model = swing_decision_tool(data, info)
+        # Basic LightGBM parameters
+        params = {
+            'learning_rate': hp.loguniform('learning_rate', np.log(0.01), np.log(0.3)),
+            'n_estimators': hp.quniform('n_estimators', 100, 500, 50),
+            'num_leaves': hp.quniform('num_leaves', 20, 200, 10),
+            'min_child_samples': hp.quniform('min_child_samples', 10, 100, 5)
+        }
 
-        # Save the model
-        with open(f"models/{tool_model[0]}_model.pkl", "wb") as f:
-            pickle.dump(posterior, f)
+        def objective(params):
+            # Convert float parameters to integers where needed
+            params['n_estimators'] = int(params['n_estimators'])
+            params['num_leaves'] = int(params['num_leaves'])
+            params['min_child_samples'] = int(params['min_child_samples'])
+            
+            model.set_params(**params)
+            score = cross_val_score(model, X, y, cv=folds, scoring=scoring)
+            return {"loss": -score.mean(), "status": STATUS_OK}
 
-        print(f"Saved {tool_model[0]} model \n")
+        # Find best parameters
+        trials = Trials()
+        best = fmin(objective, params, algo=tpe.suggest, max_evals=max_evals, trials=trials)
 
-def train_all_models(tool_info: dict, data: pd.DataFrame, clf_model_types: list, reg_model_types: list, clf_params: dict, reg_params: dict, max_evals: int, folds: int = 5):
-    """
-    Train all models for each tool grade
+        # Set the best parameters and fit
+        best['n_estimators'] = int(best['n_estimators'])
+        best['num_leaves'] = int(best['num_leaves'])
+        best['min_child_samples'] = int(best['min_child_samples'])
+        model.set_params(**best)
+        
+        # Fit final model
+        if info["model_type"] == "classifier":
+            # Calibration is built into the saved model
+            model = CalibratedClassifierCV(model, cv=5, method='isotonic')
+            model.fit(X, y)
+        else:
+            model.fit(X, y)
 
-    :param tool_info: Dictionary of required models and their respective features and targets
-    :param targets: List of targets for each model
-    :param data: DataFrame of the data
-    :param clf_model_types: List of classifier model types to test
-    :param reg_model_types: List of regressor model types to test
-    :param clf_params: Dictionary of hyperparameters for classifier models
-    :param reg_params: Dictionary of hyperparameters for regressor models
-    :param max_evals: Maximum number of evaluations for hyperparameter tuning
-    :param folds: Number of folds for cross validation
-
-    """
-
-    for tool_model in tool_info.items():
-        info = tool_model[1]
-
-        # Record the best model
-        best_score = float('-inf')
-
-        # Set up the model types
-        model_types = clf_model_types if info["model_type"] == "classifier" else reg_model_types
-
-        for model_type in model_types:
-
-            print(f"Training model {tool_model[0]} with model type {model_type} {info['model_type']}")
-
-            if model_type == "LGBM":
-                model = lgbm.LGBMClassifier() if info["model_type"] == "classifier" else lgbm.LGBMRegressor()
-
-            elif model_type == "XGB":
-                model = xgb.XGBClassifier() if info["model_type"] == "classifier" else xgb.XGBRegressor()
-
-            elif model_type == "RF":
-                model = RandomForestClassifier() if info["model_type"] == "classifier" else RandomForestRegressor()
-
-            # Get info from the dictionary
-            features = info["features"]
-            target = info["target"]
-            scoring = info["scoring"]
-            query = info["query"]
-
-            # Set up the data
-            subset = data.query(query).dropna(subset=features + [target])
-            X = subset[features]
-            y = subset[target]
-
-            # Fit the hyperparameters
-            print("Fitting hyperparameters...")
-            params = clf_params[model_type] if info["model_type"] == "classifier" else reg_params[model_type]
-
-            def objective(params):
-                model.set_params(**params)
-                if info["model_type"] == "classifier":
-                    kf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=RANDOM_STATE)
-                else:
-                    kf = KFold(n_splits=folds, shuffle=True, random_state=RANDOM_STATE)
-
-                score = cross_val_score(model, X, y, cv=kf, scoring=scoring)
-                return {"loss": -score.mean(), "status": STATUS_OK}
-
-            trials = Trials()
-            best = fmin(objective, params, algo=tpe.suggest, max_evals=max_evals, trials=trials)
-
-            # Retrieve the best trial
-            best_trial = min(trials.results, key=lambda x: x['loss'])
-            score = best_trial['loss']
-
-            # Save the best model
-            if score > best_score:
-
-                # Set the best hyperparameters
-                model.set_params(**best)
-
-                # Fit the model
-                print("Fitting the model...")
-                model.fit(X, y)
-
-                best_score = score
-                best_model = model
-
-        # Save the best model and features
-        with open(f"models/{tool_model[0]}_model.pkl", "wb") as f:
-            pickle.dump(best_model, f)
-
+        # Save model and features
+        with open(f"models/{tool_model[0]}_lgbm.pkl", "wb") as f:
+            pickle.dump(model, f)
         with open(f"models/{tool_model[0]}_features.pkl", "wb") as f:
             pickle.dump(features, f)
 
-        print(f"Saved {tool_model[0]} model \n")
+        print(f"Saved {tool_model[0]} model\n")
 
 def get_state_exp_args() -> argparse.Namespace:
     """
@@ -153,10 +97,6 @@ def get_state_exp_args() -> argparse.Namespace:
     parser.add_argument("--start_date", type=str, help="Date to start training", default=TRAIN_START)
     parser.add_argument("--end_date", type=str, help="Date to end training", default=TRAIN_END)
     parser.add_argument("--game_types", type=list, help="List of game types to pull data from", default=GAME_TYPES)
-    parser.add_argument("--clf_model_types", type=list, help="List of model types to test", default=CLF_MODEL_TYPES)
-    parser.add_argument("--reg_model_types", type=list, help="List of model types to test", default=REG_MODEL_TYPES)
-    parser.add_argument("--clf_params", type=dict, help="Dictionary of hyperparameters for classifier models", default=CLF_PARAMS)
-    parser.add_argument("--reg_params", type=dict, help="Dictionary of hyperparameters for regressor models", default=REG_PARAMS)
     parser.add_argument("--tool_info", type=dict, help="Dictionary of required models and their respective features and targets", default=TOOL_INFO)
     parser.add_argument("--max_evals", type=int, help="Maximum number of evaluations for hyperparameter tuning", default=MAX_EVALS)
 
@@ -173,7 +113,7 @@ def main():
     data = format_data(data, build_rv_table=True)
 
     # Train the models
-    train_all_models(args.tool_info, data, args.clf_model_types, args.reg_model_types, args.clf_params, args.reg_params, args.max_evals)
+    train_all_models(args.tool_info, data, args.max_evals)
 
 if __name__ == "__main__":
     main()

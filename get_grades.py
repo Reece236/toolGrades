@@ -11,7 +11,7 @@ from etl import pull_data, format_data
 import pymc as pm
 import arviz as az
 
-def load_models() -> dict:
+def load_models(args) -> dict:
     """
     Load the models and other stuff needed for each tool
 
@@ -38,6 +38,10 @@ def load_models() -> dict:
     models['le'] = le
     models['run_value'] = run_value
 
+    if args.ovr_model:
+        with open(f"models/{args.ovr_model}", "rb") as f:
+            args.ovr_model = pickle.load(f)
+
     return models
 
 def standardize_to_20_80(values: pd.Series) -> pd.Series:
@@ -52,7 +56,7 @@ def calculate_bayesian_grades(data: pd.DataFrame, league_priors: dict) -> pd.Dat
     """
     bayesian_grades = pd.DataFrame()
     
-    for metric in ['decScore', '95th_pBat_speed', 'smash_factor', 'conScore']:
+    for metric in ['decScore', 'powScore', 'prepScore', 'conScore']:
         # Get relevant data and filter out missing values
         metric_data = data[['batter', metric]].dropna()
         
@@ -105,8 +109,18 @@ def calculate_bayesian_grades(data: pd.DataFrame, league_priors: dict) -> pd.Dat
                           sigma=obs_stds,
                           observed=player_stats['mean_standardized'])
             
-            # Inference with increased tuning
-            trace = pm.sample(2000, tune=2000, target_accept=0.9)
+            # Inference with NUTS
+            trace = pm.sample(2000, 
+                            tune=1000,
+                            target_accept=0.8,
+                            return_inferencedata=True)
+            
+            # Check sampling diagnostics
+            summary = az.summary(trace)
+            divergences = trace.sample_stats.diverging.sum()
+            
+            if divergences > 100:  # More than 5% divergences
+                print(f"Warning: {divergences} divergent transitions in {metric}")
         
         # Transform results back to original scale and create grades
         summary = az.summary(trace, var_names=['player_effects'])
@@ -115,14 +129,16 @@ def calculate_bayesian_grades(data: pd.DataFrame, league_priors: dict) -> pd.Dat
         ci_upper = summary['hdi_97%'].values * overall_std + overall_mean
         
         # Create grades from raw values
-        grades = standardize_to_20_80(pd.Series(raw_vals))
-        ci_lower_grade = standardize_to_20_80(pd.Series(ci_lower))
-        ci_upper_grade = standardize_to_20_80(pd.Series(ci_upper))
+        grades = standardize_to_20_80(raw_vals)
+        ci_lower_grade = standardize_to_20_80(ci_lower)
+        ci_upper_grade = standardize_to_20_80(ci_upper)
         
         # Store both raw values and grades
         summary_df = pd.DataFrame({
             f'{metric}_bayes': raw_vals,
             f'{metric}_bayes_grade': grades,
+            f'{metric}_ci_lower': ci_lower,
+            f'{metric}_ci_upper': ci_upper,
             f'{metric}_ci_lower_grade': ci_lower_grade,
             f'{metric}_ci_upper_grade': ci_upper_grade
         }, index=valid_players)
@@ -144,30 +160,27 @@ def get_grades(data: pd.DataFrame, models: dict, year: int, q:int) -> pd.DataFra
     :return: DataFrame of player grades
     """
 
-    # Add swing probability
-    data['xSw'] = models['Swing Decision'].predict_proba(data[models['Swing Decision' + "_features"]])[:, 1]
+    # Add swing probability - calibration is already built in
+    data['pSwing'] = models['Swing Decision'].predict_proba(data[models['Swing Decision' + "_features"]])[:, 1]
 
     # Add result probability
     probs = pd.DataFrame(models['Outcome Probability'].predict_proba(data[models['Outcome Probability' + "_features"]]))
-
+    
     # Calculate run value for each event
-    for col in probs.columns:
-        probs[col] = probs[col] * models['run_value'].iloc[int(col)]
-
-    probs.fillna(0, inplace=True)
-
-    # Calculate swing run value
-    data['swingRv'] = list(probs.sum(axis=1))
-
+    data['swingRv'] = probs * rv_table['delta_run_exp'].T
     # Add Ball and Strike Values
-    data['ballRv'] = data.loc[data['cResult'] == (data['count'] + 'ball')]['cRV'].mean()
-    data['strikeRv'] = data.loc[data['cResult'] == (data['count'] + 'called_strike')]['cRV'].mean()
+    strikes = data.query('result == "called_strike"')
+    balls = data.query('result == "ball"')
+
+    data['ballRv'] = data['count'].map(balls.groupby('count')['delta_run_exp'].mean())
+
+    data['strikeRv'] = data['count'].map(strikes.groupby('count')['delta_run_exp'].mean())
 
     # Calculate swing/called strike/ball probabilities and turn into decision score
     data['pSwing'] = models['Swing Decision'].predict_proba(data[models['Swing Decision' + "_features"]])[:, 1]
     data['pStrike'] = (models['Strike Probability'].predict_proba(data[models['Strike Probability' + "_features"]])[:, 1]) * (1-data['pSwing'])
     data['pBall'] = 1 - data['pSwing'] - data['pStrike']
-    data['xPitchScore'] = data['xSw'] * data['pSwing'] + data['strikeRv'] * data['pStrike'] + data['ballRv'] * data['pBall']
+    data['xPitchScore'] = data['pSwing'] * data['pSwing'] + data['strikeRv'] * data['pStrike'] + data['ballRv'] * data['pBall']
     data['TakeScore'] = (data['strikeRv'] * (data['pStrike'] / (data['pStrike'] + data['pBall']))) + (
                 data['ballRv'] * (data['pBall'] / (data['pStrike'] + data['pBall'])))
     data['decScore'] = (np.where(data['decision'] == 1, data['swingRv'], data['TakeScore']) - data['xPitchScore'])
@@ -177,22 +190,14 @@ def get_grades(data: pd.DataFrame, models: dict, year: int, q:int) -> pd.DataFra
     data['xEV'] = np.where(data['xEV'] > 0, data['xEV'], 0)
     data['xEV'] = np.where(data['xEV'] < 120, data['xEV'], 120)
     data['xEV'] = np.where(pd.isna(data['launch_speed']), np.nan, data['xEV'])
-    data['delta_ev'] = data['launch_speed'] - data['xEV']
+    data['powScore'] = data['launch_speed'] - data['xEV']
 
     # project bat speed from normalizing delta_ev, mean is 72 and 1 std is 6.5
-    data['pBat_speed'] = (data['delta_ev'] - data['delta_ev'].mean()) / data['delta_ev'].std() * 6.5 + 72
+    data['pBat_speed'] = (data['powScore'] - data['powScore'].mean()) / data['powScore'].std() * 6.5 + 72
 
     # Calculate contact score
     data['xCon'] = models['Bat to Ball'].predict_proba(data[models['Bat to Ball' + "_features"]])[:, 1]
     data['conScore'] = np.where(data['decision'] == 1, data['contact'] - data['xCon'], np.nan)
-
-    # 1 + (Exit Velocity – Bat Speed)/(Pitch Speed + Bat Speed)
-    data['smash_factor'] = 1 + (data['launch_speed'] - data['pBat_speed']) / (
-                data['release_speed'] + data['pBat_speed'])
-
-    # Smash Factor is 0 for whiffs and fouls
-    data['smash_factor'] = np.where(data['result'].isin(['foul', 'swinging_strike', 'swinging_strike_blocked', 'foul_tip']), 0,
-                                    data['smash_factor'])
 
     # Calculate the 95th percentile of a players bat speed and the std of swings between their 90th and max bat speed and EV
     data['EV95'] = data['batter'].map(data.groupby('batter')['launch_speed'].quantile(0.95))
@@ -213,13 +218,13 @@ def get_grades(data: pd.DataFrame, models: dict, year: int, q:int) -> pd.DataFra
 
     # Filter swings between 90th and max EV for each player
     mask = (data['launch_speed'] >= data['90th_EV']) & (data['launch_speed'] <= data['max_EV'])
-    data['std_EV'] = data[mask].groupby('batter')['launch_speed'].transform('std')
+    data['prepScore'] = data[mask].groupby('batter')['powScore'].transform('std')
 
     # Aggregate the data by batter
     grades = data.groupby('batter').agg(
-        {'decScore': 'mean', 'pBat_speed': 'mean', 'smash_factor': 'mean', '95th_pBat_speed': 'mean',
-         'std_pBat_speed': 'mean', 'conScore': 'mean', 'xRV': 'mean', 'std_EV':'mean', 'EV95': 'mean',
-         'count': 'count'}).sort_values('decScore', ascending=False)
+        {'decScore': 'mean', 'pBat_speed': 'mean', '95th_pBat_speed': 'mean',
+         'std_pBat_speed': 'mean', 'conScore': 'mean', 'xRV': 'mean', 'EV95': 'mean',
+         'powScore':'mean', 'prepScore':'mean', 'count': 'count'}).sort_values('decScore', ascending=False)
 
     # Get sprint speed from statcast
     sprint_grade = pyb.statcast_sprint_speed(year, 0)
@@ -231,34 +236,30 @@ def get_grades(data: pd.DataFrame, models: dict, year: int, q:int) -> pd.DataFra
 
     # Make decGrade mean 50 and std 10
     grades['decGrade'] = (grades['decScore'] - qualifiers['decScore'].mean()) / qualifiers['decScore'].std() * 10 + 50
-    grades['powGrade'] = (grades['pBat_speed'] - qualifiers['pBat_speed'].mean()) / qualifiers['pBat_speed'].std() * 10 + 50
+    grades['powGrade'] = (grades['powScore'] - qualifiers['powScore'].mean()) / qualifiers['powScore'].std() * 10 + 50
+    grades['prepScore'] = (grades['prepScore'] - qualifiers['prepScore'].mean()) / qualifiers['prepScore'].std() * 10 + 50
     grades['altPowGrade'] = (grades['std_pBat_speed'] - qualifiers['std_pBat_speed'].mean()) / qualifiers['std_pBat_speed'].std() * 10 + 50
     grades['conGrade'] = (grades['conScore'] - qualifiers['conScore'].mean()) / qualifiers['conScore'].std() * 10 + 50
-    grades['SFGrade'] = (grades['smash_factor'] - qualifiers['smash_factor'].mean()) / qualifiers['smash_factor'].std() * 10 + 50
     grades['speedGrade'] = (grades['sprint_speed'] - qualifiers['sprint_speed'].mean()) / qualifiers['sprint_speed'].std() * 10 + 50
     grades['95thPowGrade'] = (grades['95th_pBat_speed'] - qualifiers['95th_pBat_speed'].mean()) / qualifiers['95th_pBat_speed'].std() * 10 + 50
     grades['EV95Grade'] = (grades['EV95'] - qualifiers['EV95'].mean()) / qualifiers['EV95'].std() * 10 + 50
-    grades['stdEVGrade'] = (grades['std_EV'] - qualifiers['std_EV'].mean()) / qualifiers['std_EV'].std() * 10 + 50
 
     # Define league-wide priors based on historical data
     league_priors = {
         'decScore': {'mean': -0.45, 'std': 0.05},
-        '95th_pBat_speed': {'mean': 79.0, 'std': 1.25},
-        'smash_factor': {'mean': .40, 'std': 0.09},
+        'powScore': {'mean': 25, 'std':4.3},
+        'prepScore': {'mean': 35, 'std': 9},
         'conScore': {'mean': -0.15, 'std': 0.075}
     }
-    
+
     # Calculate Bayesian grades
     bayesian_estimates = calculate_bayesian_grades(data, league_priors)
-
-    grades.to_csv('results/pre_grades.csv')
-    bayesian_estimates.to_csv('results/pre_baes.csv')
     
     # Add Bayesian estimates to grades DataFrame
     grades = grades.join(bayesian_estimates)
     
     # Add confidence intervals and standardized Bayesian grades
-    for metric in ['decScore', '95th_pBat_speed', 'smash_factor', 'conScore']:
+    for metric in ['decScore', 'powScore', 'prepScore', 'conScore']:
         grades[f'{metric}_ci_lower'] = bayesian_estimates[f'{metric}_ci_lower']
         grades[f'{metric}_ci_upper'] = bayesian_estimates[f'{metric}_ci_upper']
         grades[f'{metric}_bayes_grade'] = bayesian_estimates[f'{metric}_bayes_grade']
@@ -290,6 +291,7 @@ def get_grades_args() -> argparse.Namespace:
     parser.add_argument("--end_date", type=str, help="End date for grades", required=True)
     parser.add_argument("--year", type=int, help="Year to pull sprint speed data", required=True)
     parser.add_argument("--q", type=int, help="Minimum number of swings to be considered when standardizing grades", default=1000)
+    parser.add_argument("--ovr_model", type=str, help="Calculate overall grades", default=None)
 
     return parser.parse_args()
 
@@ -300,14 +302,24 @@ if __name__ == "__main__":
     data = pull_data(args.start_date, args.end_date, GAME_TYPES)
 
     print("Formatting data...")
-    data = format_data(data)
+    data = format_data(data, build_rv_table=True)
 
     print("Loading models...")
-    models = load_models()
+    models = load_models(args)
 
     print("Calculating grades...")
     grades, data = get_grades(data, models, args.year, args.q)
 
+    if args.ovr_model is not None:
+        print("Calculating overall grade predictions...")
+        features = ['decScore_bayes', 'powScore', 'prepScore', 'conScore_bayes', 'speedGrade']
+        X = grades[features]
+        grades['OVRGrade'] = args.ovr_model.predict(X)
+    else:
+        grades['OVRGrade'] = np.nan
+
     print("Saving grades...")
     grades.to_csv(f"results/grades_{args.suffix}.csv")
     data.to_csv(f"results/data_{args.suffix}.csv")
+
+    print("Saved! We ballin'")
