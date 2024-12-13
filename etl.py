@@ -6,16 +6,15 @@ from sklearn.preprocessing import LabelEncoder
 import pandas as pd
 import numpy as np
 from constants import TAKES, CONTACT, GAME_TYPES
-from toolgrade_sql import savant_query, first_half_query
+from toolgrade_sql import savant_query
 import sqlite3
 
 
-def pull_data(start_date: str, end_date: str, game_types: list, first_half: bool = False) -> pd.DataFrame:
+def pull_data(start_date: str, end_date: str, game_types: list = False) -> pd.DataFrame:
     """
     :param start_date: Date to start pulling data from
     :param end_date: Date to end pulling data from
     :param game_types: List of game types to pull data from
-    :param first_half: Boolean to pull first half data
     :return: DataFrame of the data
     """
 
@@ -28,7 +27,7 @@ def pull_data(start_date: str, end_date: str, game_types: list, first_half: bool
     conn = sqlite3.connect('data/statcast.db')
 
     # Set the query
-    query = (first_half_query if first_half else savant_query).format(takes=TAKES, contact=CONTACT, game_types=GAME_TYPES, start_date=start_date, end_date=end_date)
+    query = savant_query.format(takes=TAKES, contact=CONTACT, game_types=GAME_TYPES, start_date=start_date, end_date=end_date)
     
     # Pull the data
     data = pd.read_sql_query(query, conn)
@@ -38,30 +37,12 @@ def pull_data(start_date: str, end_date: str, game_types: list, first_half: bool
 
     return data
 
-def format_data(data: pd.DataFrame, build_rv_table: bool = False) -> pd.DataFrame:
+def format_data(data: pd.DataFrame) -> pd.DataFrame:
     """
     Format the data for analysis
     :param data: statcast data
-    :param build_rv_table: boolean to build rv table or use existing
     :return: formatted data
     """
-
-    # Label encode bb_barrels and calculate rv_table then save
-    if build_rv_table:
-        le = LabelEncoder()
-        data['bb_barrels'] = le.fit_transform(data['bb_barrels'])
-        rv_table = data.query('contact == 1').groupby('bb_barrels')[['delta_run_exp']].mean()
-
-        rv_table.to_csv('models/rv_table.csv')
-        with open('models/le.pkl', 'wb') as f:
-            pickle.dump(le, f)
-
-    else:
-        with open('models/le.pkl', 'rb') as f:
-            le = pickle.load(f)
-
-        data['bb_barrels'] = le.transform(data['bb_barrels'])
-
 
     # Replace hit_into_play with bb_barrels and calculate xRV and cRV (count dependent xRV)
     data['result'] = data['description'].replace({'hit_into_play': np.nan}).fillna(data['bb_barrels'])

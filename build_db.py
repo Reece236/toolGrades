@@ -16,7 +16,7 @@ def build_db():
 
     all_data = pd.DataFrame()
 
-    for file in glob.glob('statcast/*.csv'):
+    for file in glob.glob('archive/*.csv'):
         df = pd.read_csv(file)
         all_data = pd.concat([all_data, df], ignore_index=True)
         print(f'Read {file}')

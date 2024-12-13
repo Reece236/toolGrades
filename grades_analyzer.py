@@ -21,7 +21,7 @@ class GradesAnalyzer:
     
     def __init__(self, data_path: str = "results/grades_2024Grades.csv"):
         self.data = pd.read_csv(data_path, index_col="Name")
-        self.data = self.data.dropna(subset=['decScore_bayes_grade','decScore_ci_lower_grade','decScore_ci_upper_grade','95th_pBat_speed_bayes_grade','95th_pBat_speed_ci_lower_grade','95th_pBat_speed_ci_upper_grade','smash_factor_bayes_grade','smash_factor_ci_lower_grade','smash_factor_ci_upper_grade','conScore_bayes_grade','conScore_ci_lower_grade','conScore_ci_upper_grade'])
+        self.data = self.data.dropna(subset=['decScore_bayes_grade','decScore_ci_lower_grade','decScore_ci_upper_grade','powScore_bayes_grade','powScore_ci_lower_grade','powScore_ci_upper_grade','prepScore_bayes_grade','prepScore_ci_lower_grade','prepScore_ci_upper_grade','conScore_bayes_grade','conScore_ci_lower_grade','conScore_ci_upper_grade'])
         self.grade_types = [col.replace('_bayes_grade', '') 
                            for col in self.data.columns if '_bayes_grade' in col]
         self.app = dash.Dash(__name__)
@@ -29,11 +29,12 @@ class GradesAnalyzer:
         
     def setup_layout(self):
         # Create more readable column names
-        self.column_labels = {  # Made this an instance variable
+        self.column_labels = { 
             'decScore': 'Swing Decision',
-            '95th_pBat_speed': 'Power (95th)',
-            'smash_factor': 'Smash Factor',
+            'powScore': 'Power',
+            'prepScore': 'Preparedness',
             'conScore': 'Contact',
+            'speedGrade': 'Speed',
             'OVRGrade': 'Overall Grade'
         }
         
@@ -139,12 +140,12 @@ class GradesAnalyzer:
                     ci_lower = player_data[f'{grade}_ci_lower_grade']
                     ci_upper = player_data[f'{grade}_ci_upper_grade']
                     
-                    if grade == '95th_pBat_speed':
-                        # Just add point estimate for bat speed
+                    if grade == 'prepScore':
+                        # Just add point estimate for prepScore
                         fig.add_trace(
                             go.Scatter(x=[mean], y=[1], 
                                      mode='markers',
-                                     name=player,  # Simplified name
+                                     name=player,
                                      marker=dict(size=15, color=player_color)),
                             row=row, col=col
                         )
@@ -167,7 +168,7 @@ class GradesAnalyzer:
                     # Add vertical lines with player color
                     fig.add_vline(x=mean, line_dash="solid", line_width=2,
                                 line_color=player_color, row=row, col=col)
-                    if grade != '95th_pBat_speed':
+                    if grade != 'prepScore':
                         fig.add_vline(x=ci_lower, line_dash="dash", 
                                     line_color=player_color, row=row, col=col)
                         fig.add_vline(x=ci_upper, line_dash="dash",
@@ -255,7 +256,7 @@ class GradesAnalyzer:
 
     def show_leaderboard(self, save_csv: bool = False):
         """Display and optionally save the leaderboard"""
-        grade_cols = [col for col in self.data.columns if '_bayes_grade' in col]
+        grade_cols = [col for col in self.data.columns if '_bayes_grade' in col] + ['OVRGrade']
         
         # Create leaderboard with all scores and average
         leaderboard = self.data[grade_cols].copy()
@@ -264,6 +265,16 @@ class GradesAnalyzer:
         # Add player names as a column instead of index
         leaderboard = leaderboard.reset_index()
         leaderboard = leaderboard.rename(columns={'index': 'Name'})
+
+        # Rename columns to be more readable
+        rename_dict = {'decScore_bayes_grade': 'Swing Decision',
+                       'powScore_bayes_grade': 'Power',
+                       'prepScore_bayes_grade': 'Preparedness',
+                       'conScore_bayes_grade': 'Contact',
+                       'speedGrade': 'Speed',
+                       'OVRGrade': 'Overall Grade'}
+        
+        leaderboard = leaderboard.rename(columns=rename_dict)
         
         # Reorder columns to put name first
         cols = ['Name'] + [col for col in leaderboard.columns if col != 'Name']
@@ -278,7 +289,7 @@ class GradesAnalyzer:
         
         return leaderboard
     
-    def run_server(self, debug=True, port=8050):
+    def run_server(self, debug=True, port=8052):
         self.app.run_server(debug=debug, port=port)
 
 # Example usage

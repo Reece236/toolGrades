@@ -17,6 +17,7 @@ from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
 import numpy as np
 from bayes import bat_to_ball_tool, contact_quality_tool, power_tool, swing_decision_tool
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.preprocessing import LabelEncoder
 
 def train_all_models(tool_info: dict, data: pd.DataFrame, max_evals: int, folds: int = 5):
     """
@@ -110,7 +111,7 @@ def main():
     # Pull and format the data
     print("Pulling data...")
     data = pull_data(args.start_date, args.end_date, args.game_types)
-    data = format_data(data, build_rv_table=True)
+    data = format_data(data)
 
     # Train the models
     train_all_models(args.tool_info, data, args.max_evals)
