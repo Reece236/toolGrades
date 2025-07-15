@@ -1,0 +1,11 @@
+pandas
+numpy
+scikit-learn
+lightgbm
+hyperopt
+pymc
+arviz
+pybaseball
+tqdm
+plotly
+dash
