@@ -9,7 +9,7 @@ import pybaseball as pyb
 import argparse
 from etl import pull_data, format_data
 import pymc as pm
-import arviz as az
+from bayesian_models import hierarchical_normal
 
 def load_models(args) -> dict:
     """
@@ -41,41 +41,18 @@ def standardize_to_20_80(values: pd.Series) -> pd.Series:
     return (values - values.mean()) / values.std() * 10 + 50
 
 def calculate_bayesian_grades(data: pd.DataFrame, league_priors: dict) -> pd.DataFrame:
-    """
-    Calculate Bayesian estimates for player grades using league-wide priors
-    """
-    bayesian_grades = pd.DataFrame()
-    
-    for metric in ['decScore', 'powScore', 'prepScore', 'conScore']:
-        
-        with pm.Model() as model:
-            # Population parameters
-            mu = pm.Normal('mu', mu=league_priors[metric]['mean'], sigma=league_priors[metric]['std'])
-            sigma = pm.HalfNormal('sigma', sigma=league_priors[metric]['std'])
-            
-            # Player-specific parameters
-            player_mu = pm.Normal('player_mu', mu=mu, sigma=sigma, shape=len(data['batter'].unique()))
-            
-            # Likelihood
-            obs = pm.Normal(metric, mu=player_mu, sigma=sigma, observed=data.groupby('batter')[metric].mean())
-            
-            # Sample
-            trace = pm.sample(2000, tune=1000, target_accept=0.9, return_inferencedata=True)
+    """Estimate player skill with hierarchical models"""
+    results = []
+    metrics = ['decScore', 'powScore', 'prepScore', 'conScore']
 
-        # Extract posterior samples
-        posterior_samples = trace.posterior['player_mu'].values.reshape(-1, len(data['batter'].unique()))
+    for metric in metrics:
+        metric_data = data[['batter', metric]].dropna()
+        priors = league_priors[metric]
+        summary = hierarchical_normal(metric_data, metric, priors['mean'], priors['std'])
+        summary[f'{metric}_bayes_grade'] = standardize_to_20_80(summary[f'{metric}_bayes'])
+        results.append(summary)
 
-        # Calculate 95% credible intervals
-        ci_lower = np.percentile(posterior_samples, 2.5, axis=0)
-        ci_upper = np.percentile(posterior_samples, 97.5, axis=0)
-
-        # Calculate Bayesian grades
-        bayes_grade = standardize_to_20_80(data.groupby('batter')[metric].mean())
-
-        bayesian_grades[f'{metric}_ci_lower'] = ci_lower
-        bayesian_grades[f'{metric}_ci_upper'] = ci_upper
-        bayesian_grades[f'{metric}_bayes_grade'] = bayes_grade
-
+    bayesian_grades = pd.concat(results, axis=1)
     return bayesian_grades
 
 def estimate_true_power(data: pd.DataFrame) -> pd.DataFrame:

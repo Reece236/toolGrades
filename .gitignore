@@ -1,0 +1,12 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# Data and model artifacts
+models/*.pkl
+results/
+statcast.db
+data/
+
+# Misc
+.DS_Store
