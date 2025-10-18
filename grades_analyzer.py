@@ -21,9 +21,8 @@ class GradesAnalyzer:
     
     def __init__(self, data_path: str = "results/grades_2024Grades.csv"):
         self.data = pd.read_csv(data_path, index_col="Name")
-        self.data = self.data.dropna(subset=['decScore_bayes_grade','decScore_ci_lower_grade','decScore_ci_upper_grade','powScore_bayes_grade','powScore_ci_lower_grade','powScore_ci_upper_grade','prepScore_bayes_grade','prepScore_ci_lower_grade','prepScore_ci_upper_grade','conScore_bayes_grade','conScore_ci_lower_grade','conScore_ci_upper_grade'])
-        self.grade_types = [col.replace('_bayes_grade', '') 
-                           for col in self.data.columns if '_bayes_grade' in col]
+        self.data = self.data.dropna(subset=['decScore','powScore','prepScore','conScore','speedGrade'])
+        self.grade_types = [col.replace('_grade', '') for col in self.data.columns if 'grade' in col]
         self.app = dash.Dash(__name__)
         self.setup_layout()
         
@@ -91,7 +90,7 @@ class GradesAnalyzer:
                             }
                         ],
                         page_size=20,
-                        filter_action='native'  # Enable filtering
+                        filter_action='native'
                     )
                 ])
             ])
@@ -107,8 +106,8 @@ class GradesAnalyzer:
                 return {}, ''
             
             # Create a color map for selected players using hex colors
-            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-                     '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'][:len(selected_players)]
+            colors = ['blue', 'orange', 'green', 'red', 'purple',
+                      'brown', 'pink', 'gray', 'olive', 'cyan'][:len(selected_players)]
             player_colors = dict(zip(selected_players, colors))
             
             fig = make_subplots(rows=2, cols=2, 
@@ -136,9 +135,9 @@ class GradesAnalyzer:
                     row = (idx - 1) // 2 + 1
                     col = (idx - 1) % 2 + 1
                     
-                    mean = player_data[f'{grade}_bayes_grade']
-                    ci_lower = player_data[f'{grade}_ci_lower_grade']
-                    ci_upper = player_data[f'{grade}_ci_upper_grade']
+                    mean = player_data[f'{grade}_grade']
+                    ci_lower = player_data[f'{grade}_lower']
+                    ci_upper = player_data[f'{grade}_upper']
                     
                     if grade == 'prepScore':
                         # Just add point estimate for prepScore
@@ -158,7 +157,7 @@ class GradesAnalyzer:
                         
                         fig.add_trace(
                             go.Scatter(x=x, y=y, 
-                                     name=player,  # Simplified name
+                                     name=player,
                                      fill='tozeroy',
                                      line=dict(color=player_color),
                                      fillcolor=f'rgba{tuple(int(player_color.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)) + (0.2,)}'),
@@ -177,10 +176,10 @@ class GradesAnalyzer:
                 # Update summary text with readable labels
                 summary_text.append(html.H4(player))
                 for grade in self.grade_types:
-                    mean = player_data[f'{grade}_bayes_grade']
+                    mean = player_data[f'{grade}_grade']
                     label = self.column_labels.get(grade, grade)
                     summary_text.append(html.P(f"{label}: {mean:.2f}"))
-                avg = player_data[[c for c in self.data.columns if '_bayes_grade' in c]].mean()
+                avg = player_data[[c for c in self.data.columns if 'grade' in c]].mean()
                 summary_text.append(html.P(f"Overall Grade: {avg:.2f}"))
             
             fig.update_layout(height=800, showlegend=True, template="simple_white")
@@ -250,13 +249,13 @@ class GradesAnalyzer:
             player_data = self.data.loc[player]
             print(f"\n{player}:")
             for grade in self.grade_types:
-                mean = player_data[f'{grade}_bayes_grade']
+                mean = player_data[f'{grade}_grade']
                 print(f"{grade}: {mean:.2f}")
             print(f"Average: {player_data[[c for c in self.data.columns if '_bayes_grade' in c]].mean():.2f}")
 
     def show_leaderboard(self, save_csv: bool = False):
         """Display and optionally save the leaderboard"""
-        grade_cols = [col for col in self.data.columns if '_bayes_grade' in col] + ['OVRGrade']
+        grade_cols = [col for col in self.data.columns if 'grade' in col] + ['OVRGrade']
         
         # Create leaderboard with all scores and average
         leaderboard = self.data[grade_cols].copy()
@@ -267,32 +266,25 @@ class GradesAnalyzer:
         leaderboard = leaderboard.rename(columns={'index': 'Name'})
 
         # Rename columns to be more readable
-        rename_dict = {'decScore_bayes_grade': 'Swing Decision',
-                       'powScore_bayes_grade': 'Power',
-                       'prepScore_bayes_grade': 'Preparedness',
-                       'conScore_bayes_grade': 'Contact',
-                       'speedGrade': 'Speed',
+        rename_dict = {'decScore_grade': 'Swing Decision',
+                       'powScore_grade': 'Power',
+                       'prepScore_grade': 'Preparedness',
+                       'conScore_grade': 'Contact',
+                       'speedGrade_grade': 'Speed',
                        'OVRGrade': 'Overall Grade'}
         
         leaderboard = leaderboard.rename(columns=rename_dict)
         
         # Reorder columns to put name first
-        cols = ['Name'] + [col for col in leaderboard.columns if col != 'Name']
+        cols = ['Name'] + [col for col in leaderboard.columns if 'grade' in col]
         leaderboard = leaderboard[cols]
-        
-        # Sort by average score
         leaderboard = leaderboard.sort_values('Average', ascending=False)
         leaderboard = leaderboard.round(2)
-        
         if save_csv:
             leaderboard.to_csv('leaderboard.csv', index=False)
-        
         return leaderboard
-    
     def run_server(self, debug=True, port=8052):
         self.app.run_server(debug=debug, port=port)
-
-# Example usage
 if __name__ == "__main__":
     analyzer = GradesAnalyzer()
     analyzer.run_server()

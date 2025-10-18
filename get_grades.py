@@ -34,50 +34,6 @@ def load_models(args) -> dict:
 
     return models
 
-def standardize_to_20_80(values: pd.Series) -> pd.Series:
-    """
-    Standardize values to a 20-80 scale where 50 is mean and 10 points = 1 standard deviation
-    """
-    return (values - values.mean()) / values.std() * 10 + 50
-
-def calculate_bayesian_grades(data: pd.DataFrame, league_priors: dict) -> pd.DataFrame:
-    """
-    Calculate Bayesian estimates for player grades using league-wide priors
-    """
-    bayesian_grades = pd.DataFrame()
-    
-    for metric in ['decScore', 'powScore', 'prepScore', 'conScore']:
-        
-        with pm.Model() as model:
-            # Population parameters
-            mu = pm.Normal('mu', mu=league_priors[metric]['mean'], sigma=league_priors[metric]['std'])
-            sigma = pm.HalfNormal('sigma', sigma=league_priors[metric]['std'])
-            
-            # Player-specific parameters
-            player_mu = pm.Normal('player_mu', mu=mu, sigma=sigma, shape=len(data['batter'].unique()))
-            
-            # Likelihood
-            obs = pm.Normal(metric, mu=player_mu, sigma=sigma, observed=data.groupby('batter')[metric].mean())
-            
-            # Sample
-            trace = pm.sample(2000, tune=1000, target_accept=0.9, return_inferencedata=True)
-
-        # Extract posterior samples
-        posterior_samples = trace.posterior['player_mu'].values.reshape(-1, len(data['batter'].unique()))
-
-        # Calculate 95% credible intervals
-        ci_lower = np.percentile(posterior_samples, 2.5, axis=0)
-        ci_upper = np.percentile(posterior_samples, 97.5, axis=0)
-
-        # Calculate Bayesian grades
-        bayes_grade = standardize_to_20_80(data.groupby('batter')[metric].mean())
-
-        bayesian_grades[f'{metric}_ci_lower'] = ci_lower
-        bayesian_grades[f'{metric}_ci_upper'] = ci_upper
-        bayesian_grades[f'{metric}_bayes_grade'] = bayes_grade
-
-    return bayesian_grades
-
 def estimate_true_power(data: pd.DataFrame) -> pd.DataFrame:
     """Estimate true power potential using hierarchical model for exit velocities"""
     power_data = data[['batter', 'powScore']].dropna()
@@ -88,7 +44,7 @@ def estimate_true_power(data: pd.DataFrame) -> pd.DataFrame:
     
     player_stats = power_data[power_data['batter'].isin(valid_players)].groupby('batter').agg({
         'powScore': ['mean', 'std', 'count', 
-                    lambda x: np.percentile(x, 95)]  # Observed 95th
+                    lambda x: np.percentile(x, 95)]
     })
     player_stats.columns = ['mean', 'std', 'n', 'p95']
     
@@ -96,51 +52,11 @@ def estimate_true_power(data: pd.DataFrame) -> pd.DataFrame:
     overall_mean = player_stats['mean'].mean()
     overall_std = player_stats['mean'].std()
     player_stats['mean_standardized'] = (player_stats['mean'] - overall_mean) / overall_std
-    
-    with pm.Model() as model:
-        # Population parameters
-        mu = pm.Normal('mu', mu=0, sigma=1)
-        sigma = pm.HalfNormal('sigma', sigma=1)
-        
-        # Player-specific parameters
-        player_mu = pm.Normal('player_mu', 
-                            mu=mu, 
-                            sigma=sigma,
-                            shape=len(valid_players))
-        
-        # Player-specific scale (for fat tails)
-        player_scale = pm.HalfNormal('player_scale',
-                                   sigma=1,
-                                   shape=len(valid_players))
-        
-        # Student's T distribution for fat tails
-        obs = pm.StudentT('obs',
-                         nu=3,  # Degrees of freedom
-                         mu=player_mu,
-                         sigma=player_scale,
-                         observed=player_stats['mean_standardized'])
-        
-        # Sample
-        trace = pm.sample(2000, 
-                         tune=1000,
-                         target_accept=0.9,
-                         return_inferencedata=True)
-    
-    # Extract posterior predictions
-    posterior_samples = trace.posterior['player_mu'].values.reshape(-1, len(valid_players))
-    posterior_scales = trace.posterior['player_scale'].values.reshape(-1, len(valid_players))
-    
-    # Calculate 95th percentile estimates
-    true_95th = np.zeros(len(valid_players))
-    for i in range(len(valid_players)):
-        samples = np.random.standard_t(df=3, size=10000)
-        samples = samples * posterior_scales[:100, i].mean() + posterior_samples[:100, i].mean()
-        true_95th[i] = np.percentile(samples, 95)
-    
-    # Transform back to original scale
-    true_95th = true_95th * overall_std + overall_mean
-    
-    return pd.Series(true_95th, index=valid_players)
+
+    # Get 20-80 scale of player stats
+    player_stats['grade'] = (player_stats['mean_standardized'] - player_stats['mean_standardized'].mean()) / player_stats['mean_standardized'].std() * 10 + 50
+
+    return pd.Series(player_stats['grade'], index=valid_players)
 
 def get_grades(data: pd.DataFrame, models: dict, year: int, q:int) -> pd.DataFrame:
     """
@@ -250,18 +166,6 @@ def get_grades(data: pd.DataFrame, models: dict, year: int, q:int) -> pd.DataFra
         'conScore': {'mean': 0, 'std': 0.09}
     }
 
-    # Calculate Bayesian grades
-    bayesian_estimates = calculate_bayesian_grades(data, league_priors)
-    
-    # Add Bayesian estimates to grades DataFrame
-    grades = grades.join(bayesian_estimates)
-    
-    # Add confidence intervals and standardized Bayesian grades
-    for metric in ['decScore', 'powScore', 'prepScore', 'conScore']:
-        grades[f'{metric}_ci_lower'] = bayesian_estimates[f'{metric}_ci_lower']
-        grades[f'{metric}_ci_upper'] = bayesian_estimates[f'{metric}_ci_upper']
-        grades[f'{metric}_bayes_grade'] = bayesian_estimates[f'{metric}_bayes_grade']
-
     # Replace direct 95th percentile calculation with Bayesian estimate
     print("Estimating true power potential...")
     true_power = estimate_true_power(data)
@@ -319,7 +223,7 @@ if __name__ == "__main__":
         with open(f"models/{args.ovr_model}_predictor.pkl", "rb") as f:
             ovr_model = pickle.load(f)
             
-        features = ['decScore_bayes', 'powScore_bayes', 'prepScore_bayes', 'conScore_bayes', 'speedGrade']
+        features = ['decScore', 'powScore', 'prepScore', 'conScore', 'speedGrade']
         X = grades[features]
         grades['OVRGrade'] = ovr_model.predict(X)
     else:
